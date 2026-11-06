@@ -102,7 +102,12 @@
                 <button id="start-button" class="start-button" type="button"><svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></svg><span>Start clicking</span></button>
                 <button id="stop-button" class="stop-button" type="button" disabled><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>Stop</button>
               </div>
-              <div class="hotkey-row"><span>GLOBAL SHORTCUTS</span><div><kbd>F6</kbd><small>Start / stop</small><kbd>F7</kbd><small>Stop</small></div></div>
+              <div class="hotkey-row">
+                <span>GLOBAL SHORTCUTS · CLICK TO CHANGE</span>
+                <div class="hotkey-setting"><small>Start / stop</small><button class="hotkey-capture" id="toggle-hotkey" type="button">F6</button></div>
+                <div class="hotkey-setting"><small>Stop</small><button class="hotkey-capture" id="stop-hotkey" type="button">F7</button></div>
+                <p class="hotkey-help">Tap a shortcut field, then press your preferred key or key combination. Use Ctrl, Alt or Shift with letters and numbers.</p>
+              </div>
               <div class="engine-note" id="engine-note"><span class="engine-dot"></span><span>Native engine connects in the desktop app</span></div>
             </section>
 

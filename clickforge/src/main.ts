@@ -30,6 +30,11 @@ let toastTimer: number | undefined;
 let running = false;
 let desktop = false;
 let unlistenFns: UnlistenFn[] = [];
+type HotkeyKind = "toggle" | "stop";
+let capturingHotkey: HotkeyKind | null = null;
+let toggleShortcut = "F6";
+let stopShortcut = "F7";
+let registeredShortcuts: string[] = [];
 
 function notify(message: string) {
   toast.textContent = message;
@@ -102,7 +107,7 @@ function setRunning(next: boolean, message: string) {
   const card = byId<HTMLDivElement>("status-card");
   card.dataset.state = next ? "running" : "idle";
   byId<HTMLSpanElement>("status-title").textContent = next ? "Clicking in progress" : (message || "Ready when you are");
-  byId<HTMLSpanElement>("status-detail").textContent = next ? "Press F6 or Stop to end the session" : message;
+  byId<HTMLSpanElement>("status-detail").textContent = next ? `Press ${toggleShortcut} or ${stopShortcut} to stop` : message;
   byId<HTMLButtonElement>("start-button").disabled = next || !desktop;
   byId<HTMLButtonElement>("stop-button").disabled = !next || !desktop;
   byId<HTMLButtonElement>("start-button").querySelector("span")!.textContent = next ? "Running…" : "Start clicking";
@@ -118,6 +123,8 @@ function persistSettings(showMessage = false) {
   saved["repeat-mode"] = document.querySelector<HTMLInputElement>('input[name="repeat-mode"]:checked')?.value ?? "infinite";
   saved["position-mode"] = document.querySelector<HTMLInputElement>('input[name="position-mode"]:checked')?.value ?? "current";
   saved["edge-stop"] = checked("edge-stop");
+  saved["toggle-shortcut"] = toggleShortcut;
+  saved["stop-shortcut"] = stopShortcut;
   localStorage.setItem("clickforge-settings-v1", JSON.stringify(saved));
   if (showMessage) notify("Settings saved on this device.");
 }
@@ -127,6 +134,8 @@ function loadSettings() {
   if (!raw) return;
   try {
     const saved = JSON.parse(raw) as Record<string, string | boolean>;
+    if (typeof saved["toggle-shortcut"] === "string") toggleShortcut = saved["toggle-shortcut"] as string;
+    if (typeof saved["stop-shortcut"] === "string") stopShortcut = saved["stop-shortcut"] as string;
     Object.entries(saved).forEach(([id, savedValue]) => {
       if (id === "edge-stop") { byId<HTMLInputElement>(id).checked = Boolean(savedValue); return; }
       if (id === "repeat-mode" || id === "position-mode") {
@@ -178,6 +187,120 @@ function applyTheme(theme: "light" | "dark") {
   localStorage.setItem("clickforge-theme", theme);
 }
 
+function renderHotkeys() {
+  byId<HTMLButtonElement>("toggle-hotkey").textContent = capturingHotkey === "toggle" ? "Press keys…" : toggleShortcut;
+  byId<HTMLButtonElement>("stop-hotkey").textContent = capturingHotkey === "stop" ? "Press keys…" : stopShortcut;
+}
+
+function shortcutFromKeyboardEvent(event: KeyboardEvent): string | null {
+  const modifierOnly = ["Control", "Alt", "Shift", "Meta"].includes(event.key);
+  if (modifierOnly) return null;
+
+  const code = event.code;
+  let key = "";
+  if (/^Key[A-Z]$/.test(code)) key = code.slice(3);
+  else if (/^Digit[0-9]$/.test(code)) key = code.slice(5);
+  else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) key = code;
+  else {
+    const named: Record<string, string> = {
+      Space: "Space", Escape: "Escape", Enter: "Enter", Tab: "Tab",
+      Backspace: "Backspace", Delete: "Delete", Insert: "Insert",
+      Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
+      ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
+      Pause: "Pause", PrintScreen: "PrintScreen"
+    };
+    key = named[code] ?? "";
+  }
+  if (!key) return null;
+
+  const modifiers: string[] = [];
+  if (event.ctrlKey) modifiers.push("Ctrl");
+  if (event.altKey) modifiers.push("Alt");
+  if (event.shiftKey) modifiers.push("Shift");
+  if (event.metaKey) modifiers.push("Super");
+  if (/^[A-Z0-9]$/.test(key) && modifiers.length === 0) return "__NEEDS_MODIFIER__";
+  return [...modifiers, key].join("+");
+}
+
+async function configureHotkeys() {
+  if (!desktop) return;
+  const next = [toggleShortcut, stopShortcut];
+  if (toggleShortcut === stopShortcut) throw new Error("Start/stop and Stop shortcuts must be different.");
+  if (registeredShortcuts.length) {
+    await unregister(registeredShortcuts);
+    registeredShortcuts = [];
+  }
+  await register(toggleShortcut, (event) => {
+    // The plugin reports both key-down and key-up. Act only on key-down,
+    // otherwise the clicker starts on press and immediately stops on release.
+    if (event.state !== "Pressed") return;
+    if (running) void stopClicking(); else void startClicking();
+  });
+  try {
+    await register(stopShortcut, (event) => {
+      if (event.state === "Pressed") void stopClicking();
+    });
+    registeredShortcuts = next;
+  } catch (error) {
+    await unregister(toggleShortcut).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function beginHotkeyCapture(kind: HotkeyKind) {
+  if (!desktop) {
+    notify("Shortcut editing is available in the installed desktop app.");
+    return;
+  }
+  try {
+    if (registeredShortcuts.length) await unregister(registeredShortcuts);
+    registeredShortcuts = [];
+    capturingHotkey = kind;
+    renderHotkeys();
+    notify("Press the shortcut you want. Escape cancels.");
+  } catch (error) {
+    notify(`Could not enter shortcut capture mode: ${String(error)}`);
+  }
+}
+
+function handleHotkeyCapture(event: KeyboardEvent) {
+  if (!capturingHotkey || event.repeat) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === "Escape") {
+    capturingHotkey = null;
+    renderHotkeys();
+    void configureHotkeys().catch((error) => notify(`Could not restore shortcuts: ${String(error)}`));
+    return;
+  }
+  const shortcut = shortcutFromKeyboardEvent(event);
+  if (shortcut === "__NEEDS_MODIFIER__") {
+    notify("Use Ctrl, Alt or Shift with a letter or number.");
+    return;
+  }
+  if (!shortcut) return;
+  const previousToggle = toggleShortcut;
+  const previousStop = stopShortcut;
+  if (capturingHotkey === "toggle") toggleShortcut = shortcut;
+  else stopShortcut = shortcut;
+  if (toggleShortcut === stopShortcut) {
+    toggleShortcut = previousToggle;
+    stopShortcut = previousStop;
+    notify("Those shortcuts must be different. Choose another key.");
+    return;
+  }
+  capturingHotkey = null;
+  persistSettings();
+  renderHotkeys();
+  void configureHotkeys().then(() => notify("Global shortcuts updated.")).catch((error) => {
+    toggleShortcut = previousToggle;
+    stopShortcut = previousStop;
+    renderHotkeys();
+    void configureHotkeys().catch(() => undefined);
+    notify(`That shortcut could not be registered: ${String(error)}`);
+  });
+}
+
 async function initializeDesktop() {
   desktop = isTauri();
   if (!desktop) {
@@ -196,10 +319,9 @@ async function initializeDesktop() {
     byId<HTMLElement>("click-count").textContent = event.payload.clicks.toLocaleString();
     byId<HTMLElement>("cycle-count").textContent = `${event.payload.cycles.toLocaleString()} cycles completed`;
   }));
-  try {
-    await register("F6", async () => { if (running) await stopClicking(); else await startClicking(); });
-    await register("F7", async () => stopClicking());
-  } catch (error) { notify(`Global shortcuts unavailable: ${String(error)}`); }
+  renderHotkeys();
+  try { await configureHotkeys(); }
+  catch (error) { notify(`Global shortcuts unavailable: ${String(error)}`); }
 }
 
 loadSettings();
@@ -214,8 +336,11 @@ byId<HTMLButtonElement>("start-button").addEventListener("click", startClicking)
 byId<HTMLButtonElement>("stop-button").addEventListener("click", stopClicking);
 byId<HTMLButtonElement>("save-button").addEventListener("click", () => persistSettings(true));
 byId<HTMLButtonElement>("reset-button").addEventListener("click", resetSettings);
+byId<HTMLButtonElement>("toggle-hotkey").addEventListener("click", () => { void beginHotkeyCapture("toggle"); });
+byId<HTMLButtonElement>("stop-hotkey").addEventListener("click", () => { void beginHotkeyCapture("stop"); });
+window.addEventListener("keydown", handleHotkeyCapture, true);
 document.querySelectorAll<HTMLInputElement>('input[name="repeat-mode"], input[name="position-mode"]').forEach((radio) => radio.addEventListener("change", () => { updateModeControls(); persistSettings(); }));
 document.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input, select").forEach((field) => field.addEventListener("change", () => { updateIntervalSummary(); persistSettings(); }));
 
 void initializeDesktop();
-window.addEventListener("beforeunload", () => { unlistenFns.forEach((unlisten) => unlisten()); if (desktop) { void unregister("F6"); void unregister("F7"); } });
+window.addEventListener("beforeunload", () => { unlistenFns.forEach((unlisten) => unlisten()); if (desktop && registeredShortcuts.length) void unregister(registeredShortcuts); });
